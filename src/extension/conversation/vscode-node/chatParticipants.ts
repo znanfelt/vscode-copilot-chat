@@ -11,6 +11,7 @@ import { ConfigKey, IConfigurationService } from '../../../platform/configuratio
 import { IEndpointProvider } from '../../../platform/endpoint/common/endpointProvider';
 import { IOctoKitService } from '../../../platform/github/common/githubService';
 import { IExperimentationService } from '../../../platform/telemetry/common/nullExperimentationService';
+import { ILogService } from '../../../platform/log/common/logService';
 import { Event, Relay } from '../../../util/vs/base/common/event';
 import { DisposableStore, IDisposable } from '../../../util/vs/base/common/lifecycle';
 import { autorun } from '../../../util/vs/base/common/observableInternal';
@@ -18,10 +19,10 @@ import { URI } from '../../../util/vs/base/common/uri';
 import { IInstantiationService } from '../../../util/vs/platform/instantiation/common/instantiation';
 import { ChatRequest } from '../../../vscodeTypes';
 import { Intent, agentsToCommands } from '../../common/constants';
-import { ChatParticipantRequestHandler } from '../../prompt/node/chatParticipantRequestHandler';
 import { IFeedbackReporter } from '../../prompt/node/feedbackReporter';
 import { ChatSummarizerProvider } from '../../prompt/node/summarizer';
 import { ChatTitleProvider } from '../../prompt/node/title';
+import { SessionManager } from '../common/sessionManager';
 import { IUserFeedbackService } from './userActions';
 import { getAdditionalWelcomeMessage } from './welcomeMessageProvider';
 
@@ -53,6 +54,7 @@ export class ChatAgentService implements IChatAgentService {
 
 class ChatAgents implements IDisposable {
 	private readonly _disposables = new DisposableStore();
+	private readonly _sessionManager: SessionManager;
 
 	private additionalWelcomeMessage: vscode.MarkdownString | undefined;
 
@@ -67,7 +69,13 @@ class ChatAgents implements IDisposable {
 		@IChatQuotaService private readonly _chatQuotaService: IChatQuotaService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IExperimentationService private readonly experimentationService: IExperimentationService,
-	) { }
+		@ILogService private readonly logService: ILogService,
+	) {
+		// Initialize the session manager for handling chat sessions
+		// Use direct construction with manual injection for now to avoid DI constructor issues
+		this._sessionManager = new SessionManager({}, this.instantiationService, this.logService);
+		this._disposables.add(this._sessionManager);
+	}
 
 	dispose() {
 		this._disposables.dispose();
@@ -265,8 +273,11 @@ Learn more about [GitHub Copilot](https://docs.github.com/copilot/using-github-c
 				defaultIntentId;
 
 			const onPause = Event.chain(onRequestPaused, $ => $.filter(e => e.request === request).map(e => e.isPaused));
-			const handler = this.instantiationService.createInstance(ChatParticipantRequestHandler, context.history, request, stream, token, { agentName: name, agentId: id, intentId }, onPause);
-			return await handler.getResult();
+			
+			// Use the SessionManager to handle the request instead of directly creating ChatParticipantRequestHandler
+			// This provides better session abstraction and paves the way for future enhancements
+			const chatAgentArgs = { agentName: name, agentId: id, intentId };
+			return await this._sessionManager.handleRequest(request, context.history, stream, token, chatAgentArgs, onPause);
 		};
 	}
 
